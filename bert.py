@@ -4,6 +4,8 @@ import evaluate
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+import torch
+from sklearn.metrics import precision_recall_fscore_support
 from transformers import DataCollatorWithPadding
 from pathlib import Path
 
@@ -65,6 +67,7 @@ recall_metric = evaluate.load("recall")
 f1_metric = evaluate.load("f1")
 os.environ.setdefault("TENSORBOARD_LOGGING_DIR", "./logs")
 
+
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
@@ -91,7 +94,29 @@ def compute_metrics(eval_pred):
         "f1": f1["f1"],
     }
 
-lr = 2e-4
+
+# Inverse-frequency class weights help prevent majority-class collapse.
+train_labels = np.array(train_raw["labels"])
+label_counts = np.bincount(train_labels, minlength=NUM_LABELS)
+class_weights = label_counts.sum() / (NUM_LABELS * np.maximum(label_counts, 1))
+class_weights = torch.tensor(class_weights, dtype=torch.float)
+
+
+class WeightedTrainer(Trainer):
+    def __init__(self, *args, class_weights=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.get("logits")
+        loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+        loss = loss_fct(logits.view(-1, model.config.num_labels), labels.view(-1))
+        return (loss, outputs) if return_outputs else loss
+
+
+lr = 2e-5
 batch_size = 8
 num_epochs = 5
 training_args = TrainingArguments(
@@ -103,12 +128,13 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=batch_size,
     learning_rate=lr,
     load_best_model_at_end=True,
-    metric_for_best_model="accuracy",
+    metric_for_best_model="f1",
+    greater_is_better=True,
     save_total_limit=1,
     dataloader_pin_memory=False,
     logging_strategy="epoch",
 )
-trainer = Trainer(
+trainer = WeightedTrainer(
     model=model,
     args=training_args,
     train_dataset=train_tokenized,
@@ -116,6 +142,7 @@ trainer = Trainer(
     processing_class=tokenizer,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
+    class_weights=class_weights,
 )
 trainer.train()
 
@@ -147,6 +174,18 @@ print(f"Accuracy : {acc['accuracy']:.4f}")
 print(f"Precision: {precision['precision']:.4f}")
 print(f"Recall   : {recall['recall']:.4f}")
 print(f"F1-score : {f1['f1']:.4f}")
+
+per_prec, per_rec, per_f1, support = precision_recall_fscore_support(
+    y_true,
+    y_pred,
+    labels=np.arange(NUM_LABELS),
+    zero_division=0,
+)
+print("\nPer-class metrics:")
+for idx, name in enumerate(LABEL_NAMES):
+    print(
+        f"{idx:>2} {name:<24} | P={per_prec[idx]:.3f} R={per_rec[idx]:.3f} F1={per_f1[idx]:.3f} N={support[idx]}"
+    )
 
 cm = np.zeros((NUM_LABELS, NUM_LABELS), dtype=int)
 for t, p in zip(y_true, y_pred):
