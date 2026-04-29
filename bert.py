@@ -22,18 +22,32 @@ LABEL_NAMES = [
     "High-Adaptive",
     "Needs More Info",
 ]
+DISPLAY_LABEL_NAMES = [
+    "0 No\nDefense",
+    "1 Action",
+    "2 Major\nImage-Distorting",
+    "3 Disavowal",
+    "4 Minor\nImage-Distorting",
+    "5 Neurotic",
+    "6 Obsessional",
+    "7 High-\nAdaptive",
+    "8 Needs More\nInfo",
+]
 MODEL_NAME = "bert-base-uncased"
 
 HERE = Path(__file__).parent
 PSYDEFCONV_TRAIN = "https://huggingface.co/datasets/AIMH/PsyDefConv/resolve/main/Splits/train.json"
 PSYDEFCONV_TEST  = "https://huggingface.co/datasets/AIMH/PsyDefConv/resolve/main/Splits/test.json"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+# if tokenizer.pad_token is None:
+#     tokenizer.pad_token = tokenizer.eos_token
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_NAME,
     num_labels=NUM_LABELS,
     ignore_mismatched_sizes=True,
 )
 model.config.problem_type = "single_label_classification"
+model.config.pad_token_id = tokenizer.pad_token_id
 
 # All layers trainable — training from scratch
 for param in model.parameters():
@@ -118,7 +132,8 @@ class WeightedTrainer(Trainer):
 
 lr = 2e-5
 batch_size = 8
-num_epochs = 5
+num_epochs = 10
+
 training_args = TrainingArguments(
     output_dir="./results",
     eval_strategy="epoch",
@@ -194,18 +209,26 @@ for t, p in zip(y_true, y_pred):
 print("\nConfusion Matrix (rows=true, cols=predicted):")
 print(cm)
 
-fig, ax = plt.subplots(figsize=(11, 9))
+fig, ax = plt.subplots(figsize=(12, 12))
 im = ax.imshow(cm, cmap="Blues")
+ax.set_aspect("equal")
 ax.set_xlabel("Predicted Label")
 ax.set_ylabel("True Label")
 ax.set_xticks(np.arange(NUM_LABELS))
 ax.set_yticks(np.arange(NUM_LABELS))
-ax.set_xticklabels(LABEL_NAMES, rotation=35, ha="right", fontsize=8)
-ax.set_yticklabels(LABEL_NAMES, fontsize=8)
+ax.set_xticklabels(DISPLAY_LABEL_NAMES, rotation=0, ha="center", fontsize=9)
+ax.set_yticklabels(DISPLAY_LABEL_NAMES, fontsize=9)
+ax.xaxis.tick_top()
+ax.xaxis.set_label_position("top")
+ax.tick_params(axis="x", pad=10)
+ax.set_xticks(np.arange(-0.5, NUM_LABELS, 1), minor=True)
+ax.set_yticks(np.arange(-0.5, NUM_LABELS, 1), minor=True)
+ax.grid(which="minor", color="white", linestyle="-", linewidth=1)
+ax.tick_params(which="minor", bottom=False, left=False)
 for i in range(NUM_LABELS):
     for j in range(NUM_LABELS):
         ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=8)
-plt.title("Confusion Matrix – BERT fine-tuned on PsyDefConv")
+plt.title("Confusion Matrix – RoBERTa fine-tuned on PsyDefConv")
 plt.colorbar(im)
 plt.tight_layout()
 plot_path = HERE / "confusion_matrix.png"
